@@ -16,7 +16,7 @@ st.title("🎛️ Panel de Control - Mantenimiento Módulos LED")
 def cargar_inventario_drive():
     # Conectamos a Google Sheets usando el enlace de tu archivo
     conn = st.connection("gsheets", type=GSheetsConnection)
-    url_archivo = "https://docs.google.com/spreadsheets/d/166rj5uykRRDzjRlcKDa3WCR_f6FeREpc/edit?gid=995802095#gid=995802095"
+    url_archivo = "https://docs.google.com/spreadsheets/d/1ucHtfZUTpbS6IVEYduXwH5vM_yb9_GPsOmUJ5Ie_Jqg/edit?gid=411668554#gid=411668554"
     
     # Leemos la hoja de cálculo
     df = conn.read(spreadsheet=url_archivo)
