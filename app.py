@@ -2,76 +2,107 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-# 1. Configuración de la página
 st.set_page_config(page_title="Control Módulos LED Colombia", layout="wide")
 st.title("🎛️ Panel de Control - Mantenimiento Módulos LED")
 
-# 2. Carga directa de tu Google Sheet mediante enlace CSV público
-@st.cache_data(ttl=60)  # Se actualiza cada 60 segundos
+@st.cache_data(ttl=60)
 def cargar_inventario():
-    # ID y GID exactos de tu hoja de Google Drive
     sheet_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
     gid = "995802095"
     url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     
-    # Lectura directa con pandas (no requiere st.secrets)
     df = pd.read_csv(url_csv)
     
-    # Limpieza de datos
-    if 'Código' in df.columns:
-        df = df.dropna(subset=['Código'])
-        df['Código'] = df['Código'].astype(str).str.replace('.0', '', regex=False)
+    # 1. Limpiar espacios en blanco en los nombres de las columnas
+    df.columns = df.columns.astype(str).str.strip()
     
-    return df
+    # 2. Detectar dinámicamente la columna 'Zona'
+    col_zona = None
+    for col in df.columns:
+        if col.lower() in ['zona', 'zona regional', 'region', 'región']:
+            col_zona = col
+            break
+            
+    # 3. Eliminar espacios invisibles en todas las celdas de texto
+    for col in df.select_dtypes(include='object').columns:
+        df[col] = df[col].astype(str).str.strip()
+        
+    # 4. Limpiar columna de Código
+    col_codigo = next((c for c in df.columns if 'cód' in c.lower() or 'cod' in c.lower()), None)
+    if col_codigo:
+        df = df[df[col_codigo].notna() & (df[col_codigo] != '') & (df[col_codigo] != 'nan')]
+        df[col_codigo] = df[col_codigo].str.replace('.0', '', regex=False)
+        
+    return df, col_zona
 
-# Control de carga con muestra de error detallada
 try:
-    df_modulos = cargar_inventario()
-    st.success("✅ Inventario cargado exitosamente desde Google Sheets")
+    df_modulos, col_zona = cargar_inventario()
+    st.success("✅ Inventario cargado exitosamente")
 except Exception as e:
-    st.error("❌ Ocurrió un error al leer la hoja de cálculo:")
-    st.exception(e)  # Muestra el error técnico real de Python en pantalla
+    st.error("❌ Ocurrió un error al cargar la hoja de cálculo:")
+    st.exception(e)
     st.stop()
 
-# 3. Vista de Inventario y Filtros
+# ----------------------------------------------------
+# VISUALIZACIÓN Y FILTROS
+# ----------------------------------------------------
 st.header("📋 Inventario Actual")
 
 col1, col2, col3 = st.columns(3)
 
+# Identificar columnas clave automáticamente
+col_codigo = next((c for c in df_modulos.columns if 'cód' in c.lower() or 'cod' in c.lower()), df_modulos.columns[0])
+col_marca = next((c for c in df_modulos.columns if 'marca' in c.lower()), None)
+col_ubicacion = next((c for c in df_modulos.columns if 'ubicaci' in c.lower()), None)
+
 with col1:
-    zonas = df_modulos['Zona'].dropna().unique().tolist() if 'Zona' in df_modulos.columns else []
-    zona_sel = st.multiselect("Filtrar por Zona", zonas)
+    if col_zona and col_zona in df_modulos.columns:
+        # Extraer zonas únicas ignorando valores nulos o vacíos
+        zonas_unicas = sorted([z for z in df_modulos[col_zona].unique() if z and z.lower() != 'nan'])
+        zona_sel = st.multiselect("Filtrar por Zona", options=zonas_unicas)
+    else:
+        st.info("Columna 'Zona' no detectada")
+        zona_sel = []
 
 with col2:
-    marcas = df_modulos['Marca'].dropna().unique().tolist() if 'Marca' in df_modulos.columns else []
-    marca_sel = st.multiselect("Filtrar por Marca", marcas)
+    if col_marca and col_marca in df_modulos.columns:
+        marcas_unicas = sorted([m for m in df_modulos[col_marca].unique() if m and m.lower() != 'nan'])
+        marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas)
+    else:
+        marca_sel = []
 
 with col3:
-    ubicaciones = df_modulos['Ubicacion actual'].dropna().unique().tolist() if 'Ubicacion actual' in df_modulos.columns else []
-    ubicacion_sel = st.multiselect("Filtrar por Ubicación", ubicaciones)
+    if col_ubicacion and col_ubicacion in df_modulos.columns:
+        ubic_unicas = sorted([u for u in df_modulos[col_ubicacion].unique() if u and u.lower() != 'nan'])
+        ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas)
+    else:
+        ubicacion_sel = []
 
-# Aplicar filtros
+# Aplicación de los filtros combinados
 df_filtrado = df_modulos.copy()
-if zona_sel:
-    df_filtrado = df_filtrado[df_filtrado['Zona'].isin(zona_sel)]
-if marca_sel:
-    df_filtrado = df_filtrado[df_filtrado['Marca'].isin(marca_sel)]
-if ubicacion_sel:
-    df_filtrado = df_filtrado[df_filtrado['Ubicacion actual'].isin(ubicacion_sel)]
 
-# Selección de columnas visibles
-cols_visibles = [c for c in ['Código', 'Región', 'Zona', 'Marca', 'Modelo', 'Pitch', 'Ubicacion actual'] if c in df_filtrado.columns]
-st.dataframe(df_filtrado[cols_visibles], use_container_width=True, hide_index=True)
+if zona_sel and col_zona:
+    df_filtrado = df_filtrado[df_filtrado[col_zona].isin(zona_sel)]
 
-# 4. Formulario de Programación de Jornadas por Bimestre
+if marca_sel and col_marca:
+    df_filtrado = df_filtrado[df_filtrado[col_marca].isin(marca_sel)]
+
+if ubicacion_sel and col_ubicacion:
+    df_filtrado = df_filtrado[df_filtrado[col_ubicacion].isin(ubicacion_sel)]
+
+st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+
+# ----------------------------------------------------
+# FORMULARIO DE REGISTRO DE JORNADA
+# ----------------------------------------------------
 st.header("🛠️ Programar / Registrar Jornada")
 
 with st.form("form_jornada"):
     col_a, col_b = st.columns(2)
     
     with col_a:
-        codigos_disponibles = df_filtrado['Código'].tolist() if 'Código' in df_filtrado.columns else []
-        codigos_jornada = st.multiselect("Seleccionar Módulos (Códigos)", codigos_disponibles)
+        codigos_disponibles = df_filtrado[col_codigo].dropna().unique().tolist()
+        codigos_jornada = st.multiselect("Seleccionar Módulos (Códigos)", options=codigos_disponibles)
         
         tipo_jornada = st.selectbox("Tipo de Jornada", [
             "Mantenimiento Preventivo", 
@@ -91,7 +122,6 @@ with st.form("form_jornada"):
         if not codigos_jornada:
             st.warning("Selecciona al menos un código de módulo.")
         else:
-            # Cálculo automático del bimestre (B1 a B6)
             bimestre_num = (fecha_jornada.month - 1) // 2 + 1
             bimestre_id = f"{fecha_jornada.year}-B{bimestre_num}"
             
