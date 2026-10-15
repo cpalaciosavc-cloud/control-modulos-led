@@ -11,37 +11,53 @@ def cargar_inventario():
     gid = "995802095"
     url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     
+    # 1. Cargar el CSV
     df = pd.read_csv(url_csv)
     
-    # 1. Limpiar espacios en blanco en los nombres de las columnas
-    df.columns = df.columns.astype(str).str.strip()
+    # 2. Si la primera fila es un título o banner, buscar automáticamente cuál fila contiene los encabezados reales
+    columnas_txt = [str(c).lower() for c in df.columns]
+    if not any('cod' in c or 'zona' in c or 'marca' in c for c in columnas_txt):
+        for i in range(min(5, len(df))):
+            row_vals = [str(v).lower() for v in df.iloc[i].tolist()]
+            if any('cod' in v or 'zona' in v or 'marca' in v for v in row_vals):
+                df.columns = df.iloc[i].astype(str)
+                df = df.iloc[i+1:].reset_index(drop=True)
+                break
+
+    # 3. Limpieza estricta de nombres de columnas
+    df.columns = [str(c).strip() for c in df.columns]
     
-    # 2. Detectar dinámicamente la columna 'Zona'
-    col_zona = None
-    for col in df.columns:
-        if col.lower() in ['zona', 'zona regional', 'region', 'región']:
-            col_zona = col
-            break
-            
-    # 3. Eliminar espacios invisibles en todas las celdas de texto
-    for col in df.select_dtypes(include='object').columns:
-        df[col] = df[col].astype(str).str.strip()
-        
-    # 4. Limpiar columna de Código
-    col_codigo = next((c for c in df.columns if 'cód' in c.lower() or 'cod' in c.lower()), None)
+    # 4. Detección flexible de columnas clave (sin importar minúsculas/mayúsculas o tildes)
+    col_codigo = next((c for c in df.columns if 'cod' in c.lower() or 'cód' in c.lower()), None)
+    col_zona = next((c for c in df.columns if 'zona' in c.lower() or 'region' in c.lower() or 'región' in c.lower()), None)
+    col_marca = next((c for c in df.columns if 'marca' in c.lower()), None)
+    col_ubicacion = next((c for c in df.columns if 'ubic' in c.lower() or 'pantalla' in c.lower() or 'sede' in c.lower()), None)
+    
+    # 5. Limpieza de datos vacíos
     if col_codigo:
-        df = df[df[col_codigo].notna() & (df[col_codigo] != '') & (df[col_codigo] != 'nan')]
-        df[col_codigo] = df[col_codigo].str.replace('.0', '', regex=False)
+        df = df[df[col_codigo].notna()]
+        df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null'])]
+        df[col_codigo] = df[col_codigo].astype(str).str.replace('.0', '', regex=False).str.strip()
         
-    return df, col_zona
+    return df, col_codigo, col_zona, col_marca, col_ubicacion
 
 try:
-    df_modulos, col_zona = cargar_inventario()
+    df_modulos, col_codigo, col_zona, col_marca, col_ubicacion = cargar_inventario()
     st.success("✅ Inventario cargado exitosamente")
 except Exception as e:
     st.error("❌ Ocurrió un error al cargar la hoja de cálculo:")
     st.exception(e)
     st.stop()
+
+# ----------------------------------------------------
+# VISOR DE DEPURACIÓN DE COLUMNAS
+# ----------------------------------------------------
+with st.expander("🔍 Ver columnas detectadas en el archivo (Depuración)"):
+    st.write("**Columnas encontradas en el archivo:**", list(df_modulos.columns))
+    st.write(f"- **Columna Código:** `{col_codigo}`")
+    st.write(f"- **Columna Zona:** `{col_zona}`")
+    st.write(f"- **Columna Marca:** `{col_marca}`")
+    st.write(f"- **Columna Ubicación:** `{col_ubicacion}`")
 
 # ----------------------------------------------------
 # VISUALIZACIÓN Y FILTROS
@@ -50,45 +66,39 @@ st.header("📋 Inventario Actual")
 
 col1, col2, col3 = st.columns(3)
 
-# Identificar columnas clave automáticamente
-col_codigo = next((c for c in df_modulos.columns if 'cód' in c.lower() or 'cod' in c.lower()), df_modulos.columns[0])
-col_marca = next((c for c in df_modulos.columns if 'marca' in c.lower()), None)
-col_ubicacion = next((c for c in df_modulos.columns if 'ubicaci' in c.lower()), None)
-
 with col1:
-    if col_zona and col_zona in df_modulos.columns:
-        # Extraer zonas únicas ignorando valores nulos o vacíos
-        zonas_unicas = sorted([z for z in df_modulos[col_zona].unique() if z and z.lower() != 'nan'])
+    if col_zona:
+        zonas_unicas = sorted([z for z in df_modulos[col_zona].astype(str).str.strip().unique() if z.lower() not in ['nan', '', 'none', 'null']])
         zona_sel = st.multiselect("Filtrar por Zona", options=zonas_unicas)
     else:
-        st.info("Columna 'Zona' no detectada")
+        st.warning("Columna 'Zona' no detectada")
         zona_sel = []
 
 with col2:
-    if col_marca and col_marca in df_modulos.columns:
-        marcas_unicas = sorted([m for m in df_modulos[col_marca].unique() if m and m.lower() != 'nan'])
+    if col_marca:
+        marcas_unicas = sorted([m for m in df_modulos[col_marca].astype(str).str.strip().unique() if m.lower() not in ['nan', '', 'none', 'null']])
         marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas)
     else:
         marca_sel = []
 
 with col3:
-    if col_ubicacion and col_ubicacion in df_modulos.columns:
-        ubic_unicas = sorted([u for u in df_modulos[col_ubicacion].unique() if u and u.lower() != 'nan'])
+    if col_ubicacion:
+        ubic_unicas = sorted([u for u in df_modulos[col_ubicacion].astype(str).str.strip().unique() if u.lower() not in ['nan', '', 'none', 'null']])
         ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas)
     else:
         ubicacion_sel = []
 
-# Aplicación de los filtros combinados
+# Aplicar filtros combinados
 df_filtrado = df_modulos.copy()
 
 if zona_sel and col_zona:
-    df_filtrado = df_filtrado[df_filtrado[col_zona].isin(zona_sel)]
+    df_filtrado = df_filtrado[df_filtrado[col_zona].astype(str).str.strip().isin(zona_sel)]
 
 if marca_sel and col_marca:
-    df_filtrado = df_filtrado[df_filtrado[col_marca].isin(marca_sel)]
+    df_filtrado = df_filtrado[df_filtrado[col_marca].astype(str).str.strip().isin(marca_sel)]
 
 if ubicacion_sel and col_ubicacion:
-    df_filtrado = df_filtrado[df_filtrado[col_ubicacion].isin(ubicacion_sel)]
+    df_filtrado = df_filtrado[df_filtrado[col_ubicacion].astype(str).str.strip().isin(ubicacion_sel)]
 
 st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
@@ -101,7 +111,7 @@ with st.form("form_jornada"):
     col_a, col_b = st.columns(2)
     
     with col_a:
-        codigos_disponibles = df_filtrado[col_codigo].dropna().unique().tolist()
+        codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
         codigos_jornada = st.multiselect("Seleccionar Módulos (Códigos)", options=codigos_disponibles)
         
         tipo_jornada = st.selectbox("Tipo de Jornada", [
