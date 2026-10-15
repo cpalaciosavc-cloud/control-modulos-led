@@ -5,55 +5,46 @@ from datetime import datetime
 st.set_page_config(page_title="Control Módulos LED Colombia", layout="wide")
 st.title("🎛️ Panel de Control - Mantenimiento Módulos LED")
 
-def desduplicar_columnas(columnas):
-    """Asegura que todos los nombres de columnas sean únicos para evitar errores de PyArrow/Streamlit."""
-    vistos = {}
-    resultado = []
-    for col in columnas:
-        nombre = str(col).strip()
-        if not nombre or nombre.lower() in ['nan', 'unnamed:']:
-            nombre = "Columna_Sin_Nombre"
-            
-        if nombre in vistos:
-            vistos[nombre] += 1
-            resultado.append(f"{nombre}_{vistos[nombre]}")
-        else:
-            vistos[nombre] = 0
-            resultado.append(nombre)
-    return resultado
-
 @st.cache_data(ttl=60)
 def cargar_inventario():
     sheet_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
     gid = "995802095"
     url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     
-    # 1. Cargar el CSV
-    df = pd.read_csv(url_csv)
+    # 1. Cargar el CSV sin asumir encabezados en la fila 0
+    df_raw = pd.read_csv(url_csv, header=None)
     
-    # 2. Detectar si la primera fila es un título y ajustar la fila de encabezados
-    columnas_txt = [str(c).lower() for c in df.columns]
-    if not any('cod' in c or 'zona' in c or 'marca' in c for c in columnas_txt):
-        for i in range(min(5, len(df))):
-            row_vals = [str(v).lower() for v in df.iloc[i].tolist()]
-            if any('cod' in v or 'zona' in v or 'marca' in v for v in row_vals):
-                df.columns = df.iloc[i].astype(str)
-                df = df.iloc[i+1:].reset_index(drop=True)
-                break
+    # 2. Localizar exactamente la fila que contiene las columnas 'Código' y 'Zona'
+    header_idx = None
+    for idx, row in df_raw.iterrows():
+        row_cells = [str(val).lower().strip() for val in row.values]
+        has_cod = any('cód' in cell or 'cod' in cell for cell in row_cells)
+        has_zona = any('zona' in cell or 'regi' in cell for cell in row_cells)
+        if has_cod and has_zona:
+            header_idx = idx
+            break
+            
+    if header_idx is not None:
+        headers = [str(val).strip() for val in df_raw.iloc[header_idx].values]
+        df = df_raw.iloc[header_idx + 1:].copy().reset_index(drop=True)
+        df.columns = headers
+    else:
+        df = pd.read_csv(url_csv)
+        df.columns = [str(c).strip() for c in df.columns]
 
-    # 3. Desduplicar y limpiar los nombres de columnas
-    df.columns = desduplicar_columnas(df.columns)
-    
-    # 4. Detección flexible de columnas clave
-    col_codigo = next((c for c in df.columns if 'cod' in c.lower() or 'cód' in c.lower()), None)
-    col_zona = next((c for c in df.columns if 'zona' in c.lower() or 'region' in c.lower() or 'región' in c.lower()), None)
+    # 3. Mapear columnas de forma precisa
+    col_codigo = next((c for c in df.columns if 'cód' in c.lower() or 'cod' in c.lower()), None)
+    col_zona = next((c for c in df.columns if 'zona' in c.lower()), None)
+    if not col_zona:
+        col_zona = next((c for c in df.columns if 'regi' in c.lower()), None)
+        
     col_marca = next((c for c in df.columns if 'marca' in c.lower()), None)
-    col_ubicacion = next((c for c in df.columns if 'ubic' in c.lower() or 'pantalla' in c.lower() or 'sede' in c.lower()), None)
+    col_ubicacion = next((c for c in df.columns if 'ubic' in c.lower() or 'pantalla' in c.lower()), None)
     
-    # 5. Limpieza de filas nulas o inválidas en la columna del código
+    # 4. Limpieza de filas vacías o inválidas
     if col_codigo:
         df = df[df[col_codigo].notna()]
-        df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null', 'columna_sin_nombre'])]
+        df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null', 'código', 'codigo'])]
         df[col_codigo] = df[col_codigo].astype(str).str.replace('.0', '', regex=False).str.strip()
         
     return df, col_codigo, col_zona, col_marca, col_ubicacion
@@ -67,45 +58,45 @@ except Exception as e:
     st.stop()
 
 # ----------------------------------------------------
-# VISOR DE DEPURACIÓN DE COLUMNAS
+# FILTROS Y SEGMENTACIÓN POR ZONA
 # ----------------------------------------------------
-with st.expander("🔍 Ver columnas detectadas en el archivo (Depuración)"):
-    st.write("**Columnas encontradas:**", list(df_modulos.columns))
-    st.write(f"- **Columna Código:** `{col_codigo}`")
-    st.write(f"- **Columna Zona:** `{col_zona}`")
-    st.write(f"- **Columna Marca:** `{col_marca}`")
-    st.write(f"- **Columna Ubicación:** `{col_ubicacion}`")
-
-# ----------------------------------------------------
-# VISUALIZACIÓN Y FILTROS
-# ----------------------------------------------------
-st.header("📋 Inventario Actual")
+st.header("📋 Inventario y Segmentación por Zona")
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if col_zona:
-        zonas_unicas = sorted([z for z in df_modulos[col_zona].astype(str).str.strip().unique() if z.lower() not in ['nan', '', 'none', 'null']])
-        zona_sel = st.multiselect("Filtrar por Zona", options=zonas_unicas)
+    if col_zona and col_zona in df_modulos.columns:
+        # Obtener zonas únicas reales (ej. CENTRO, BOGOTA, PACIFICO, etc.)
+        zonas_unicas = sorted([
+            z for z in df_modulos[col_zona].astype(str).str.strip().unique() 
+            if z.lower() not in ['nan', '', 'none', 'null', 'zona', 'región', 'region']
+        ])
+        zona_sel = st.multiselect("Filtrar por Zona", options=zonas_unicas, help="Selecciona una o varias zonas para segmentar los códigos.")
     else:
-        st.warning("Columna 'Zona' no detectada")
+        st.warning("Columna 'Zona' no identificada")
         zona_sel = []
 
 with col2:
-    if col_marca:
-        marcas_unicas = sorted([m for m in df_modulos[col_marca].astype(str).str.strip().unique() if m.lower() not in ['nan', '', 'none', 'null']])
+    if col_marca and col_marca in df_modulos.columns:
+        marcas_unicas = sorted([
+            m for m in df_modulos[col_marca].astype(str).str.strip().unique() 
+            if m.lower() not in ['nan', '', 'none', 'null', 'marca']
+        ])
         marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas)
     else:
         marca_sel = []
 
 with col3:
-    if col_ubicacion:
-        ubic_unicas = sorted([u for u in df_modulos[col_ubicacion].astype(str).str.strip().unique() if u.lower() not in ['nan', '', 'none', 'null']])
+    if col_ubicacion and col_ubicacion in df_modulos.columns:
+        ubic_unicas = sorted([
+            u for u in df_modulos[col_ubicacion].astype(str).str.strip().unique() 
+            if u.lower() not in ['nan', '', 'none', 'null', 'ubicacion actual', 'ubicación actual']
+        ])
         ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas)
     else:
         ubicacion_sel = []
 
-# Aplicar filtros combinados
+# Aplicación del filtrado reactivo
 df_filtrado = df_modulos.copy()
 
 if zona_sel and col_zona:
@@ -117,19 +108,30 @@ if marca_sel and col_marca:
 if ubicacion_sel and col_ubicacion:
     df_filtrado = df_filtrado[df_filtrado[col_ubicacion].astype(str).str.strip().isin(ubicacion_sel)]
 
+# Mostrar la tabla segmentada
 st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 # ----------------------------------------------------
-# FORMULARIO DE REGISTRO DE JORNADA
+# PROGRAMACIÓN DE JORNADAS (CÓDIGOS SEGMENTADOS)
 # ----------------------------------------------------
 st.header("🛠️ Programar / Registrar Jornada")
+
+# Mensaje contextual según la zona seleccionada
+if zona_sel:
+    st.info(f"📌 **Zona(s) seleccionada(s):** {', '.join(zona_sel)} — Mostrando **{len(df_filtrado)}** módulo(s) disponible(s).")
+else:
+    st.caption("💡 Tip: Selecciona una Zona en los filtros superiores para ver únicamente los códigos de esa área.")
 
 with st.form("form_jornada"):
     col_a, col_b = st.columns(2)
     
     with col_a:
+        # Los códigos disponibles se generan DENTRO de df_filtrado (según la zona elegida)
         codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
-        codigos_jornada = st.multiselect("Seleccionar Módulos (Códigos)", options=codigos_disponibles)
+        codigos_jornada = st.multiselect(
+            f"Seleccionar Módulos ({len(codigos_disponibles)} disponibles en el filtro)", 
+            options=codigos_disponibles
+        )
         
         tipo_jornada = st.selectbox("Tipo de Jornada", [
             "Mantenimiento Preventivo", 
