@@ -5,6 +5,23 @@ from datetime import datetime
 st.set_page_config(page_title="Control Módulos LED Colombia", layout="wide")
 st.title("🎛️ Panel de Control - Mantenimiento Módulos LED")
 
+def desduplicar_columnas(columnas):
+    """Asegura que todos los nombres de columnas sean únicos para evitar errores de PyArrow/Streamlit."""
+    vistos = {}
+    resultado = []
+    for col in columnas:
+        nombre = str(col).strip()
+        if not nombre or nombre.lower() in ['nan', 'unnamed:']:
+            nombre = "Columna_Sin_Nombre"
+            
+        if nombre in vistos:
+            vistos[nombre] += 1
+            resultado.append(f"{nombre}_{vistos[nombre]}")
+        else:
+            vistos[nombre] = 0
+            resultado.append(nombre)
+    return resultado
+
 @st.cache_data(ttl=60)
 def cargar_inventario():
     sheet_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
@@ -14,7 +31,7 @@ def cargar_inventario():
     # 1. Cargar el CSV
     df = pd.read_csv(url_csv)
     
-    # 2. Si la primera fila es un título o banner, buscar automáticamente cuál fila contiene los encabezados reales
+    # 2. Detectar si la primera fila es un título y ajustar la fila de encabezados
     columnas_txt = [str(c).lower() for c in df.columns]
     if not any('cod' in c or 'zona' in c or 'marca' in c for c in columnas_txt):
         for i in range(min(5, len(df))):
@@ -24,19 +41,19 @@ def cargar_inventario():
                 df = df.iloc[i+1:].reset_index(drop=True)
                 break
 
-    # 3. Limpieza estricta de nombres de columnas
-    df.columns = [str(c).strip() for c in df.columns]
+    # 3. Desduplicar y limpiar los nombres de columnas
+    df.columns = desduplicar_columnas(df.columns)
     
-    # 4. Detección flexible de columnas clave (sin importar minúsculas/mayúsculas o tildes)
+    # 4. Detección flexible de columnas clave
     col_codigo = next((c for c in df.columns if 'cod' in c.lower() or 'cód' in c.lower()), None)
     col_zona = next((c for c in df.columns if 'zona' in c.lower() or 'region' in c.lower() or 'región' in c.lower()), None)
     col_marca = next((c for c in df.columns if 'marca' in c.lower()), None)
     col_ubicacion = next((c for c in df.columns if 'ubic' in c.lower() or 'pantalla' in c.lower() or 'sede' in c.lower()), None)
     
-    # 5. Limpieza de datos vacíos
+    # 5. Limpieza de filas nulas o inválidas en la columna del código
     if col_codigo:
         df = df[df[col_codigo].notna()]
-        df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null'])]
+        df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null', 'columna_sin_nombre'])]
         df[col_codigo] = df[col_codigo].astype(str).str.replace('.0', '', regex=False).str.strip()
         
     return df, col_codigo, col_zona, col_marca, col_ubicacion
@@ -53,7 +70,7 @@ except Exception as e:
 # VISOR DE DEPURACIÓN DE COLUMNAS
 # ----------------------------------------------------
 with st.expander("🔍 Ver columnas detectadas en el archivo (Depuración)"):
-    st.write("**Columnas encontradas en el archivo:**", list(df_modulos.columns))
+    st.write("**Columnas encontradas:**", list(df_modulos.columns))
     st.write(f"- **Columna Código:** `{col_codigo}`")
     st.write(f"- **Columna Zona:** `{col_zona}`")
     st.write(f"- **Columna Marca:** `{col_marca}`")
