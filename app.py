@@ -110,7 +110,7 @@ except Exception as e:
     st.stop()
 
 # ----------------------------------------------------
-# FILTROS Y SEGMENTACIÓN
+# FILTROS Y SEGMENTACIÓN POR ZONA Y CIUDAD
 # ----------------------------------------------------
 st.header("📋 Inventario Nacional - Filtros de Segmentación")
 
@@ -122,7 +122,7 @@ with col1:
             z for z in df_modulos[col_zona].astype(str).str.strip().unique() 
             if normalizar_texto(z) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
         ])
-        zona_sel = st.multiselect("Filtrar por Zona / Región", options=zonas_unicas, key="filter_zona")
+        zona_sel = st.multiselect("Filtrar por Zona / Región", options=zonas_unicas)
     else:
         zona_sel = []
 
@@ -131,7 +131,7 @@ with col2:
         c for c in df_modulos['Ciudad / Pestaña'].astype(str).str.strip().unique() 
         if normalizar_texto(c) not in ['nan', '', 'none', 'null']
     ])
-    ciudad_sel = st.multiselect("Filtrar por Pestaña / Ciudad", options=ciudades_unicas, key="filter_ciudad")
+    ciudad_sel = st.multiselect("Filtrar por Pestaña / Ciudad", options=ciudades_unicas)
 
 with col3:
     if col_marca and col_marca in df_modulos.columns:
@@ -139,7 +139,7 @@ with col3:
             m for m in df_modulos[col_marca].astype(str).str.strip().unique() 
             if normalizar_texto(m) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
         ])
-        marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas, key="filter_marca")
+        marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas)
     else:
         marca_sel = []
 
@@ -149,7 +149,7 @@ with col4:
             u for u in df_modulos[col_ubicacion].astype(str).str.strip().unique() 
             if normalizar_texto(u) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
         ])
-        ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas, key="filter_ubicacion")
+        ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas)
     else:
         ubicacion_sel = []
 
@@ -171,34 +171,20 @@ if ubicacion_sel and col_ubicacion:
 st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 # ----------------------------------------------------
-# PROGRAMACIÓN DE JORNADAS CON SELECCIÓN DINÁMICA
+# PROGRAMACIÓN DE JORNADAS CON CÓDIGOS SEGMENTADOS
 # ----------------------------------------------------
 st.header("🛠️ Programar / Registrar Jornada")
 
-codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
-
-col_sel_1, col_sel_2 = st.columns([2, 1])
-
-with col_sel_1:
-    st.info(f"📌 **Módulos disponibles en el filtro actual:** {len(codigos_disponibles)} código(s)")
-
-with col_sel_2:
-    seleccionar_todos = st.checkbox("✅ Seleccionar TODOS los módulos de la zona filtrada de una vez")
-
-# Clave dinámica para reiniciar la selección al cambiar los filtros
-key_dinamico = f"codigos_{hash(tuple(sorted(zona_sel)))}_{hash(tuple(sorted(ciudad_sel)))}_{hash(tuple(sorted(marca_sel)))}_{hash(tuple(sorted(ubicacion_sel)))}_{seleccionar_todos}"
+st.info(f"📌 **Módulos disponibles en el filtro actual:** {len(df_filtrado)} código(s)")
 
 with st.form("form_jornada"):
     col_a, col_b = st.columns(2)
     
     with col_a:
-        default_codigos = codigos_disponibles if seleccionar_todos else []
-        
+        codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
         codigos_jornada = st.multiselect(
-            f"Seleccionar Módulos Específicos ({len(codigos_disponibles)} disponibles)", 
-            options=codigos_disponibles,
-            default=default_codigos,
-            key=key_dinamico
+            f"Seleccionar Módulos ({len(codigos_disponibles)} disponibles según filtro)", 
+            options=codigos_disponibles
         )
         
         tipo_jornada = st.selectbox("Tipo de Jornada", [
