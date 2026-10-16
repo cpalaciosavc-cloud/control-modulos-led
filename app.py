@@ -5,7 +5,7 @@ import requests
 import io
 import unicodedata
 
-st.set_page_config(page_title="Control Módulos LED Colombia", layout="wide")
+st.set_page_config(page_title="Control Módulos LED - Regiones y Zonas", layout="wide")
 st.title("🎛️ Panel de Control - Mantenimiento Módulos LED Colombia")
 
 def normalizar_texto(texto):
@@ -15,30 +15,17 @@ def normalizar_texto(texto):
     nfkd = unicodedata.normalize('NFD', texto.lower().strip())
     return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
-@st.cache_data(ttl=60)
-def cargar_inventario_nacional():
-    file_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
-    url_xlsx = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
-    
-    # 1. Descargar el archivo binario del Excel
-    response = requests.get(url_xlsx, timeout=15)
-    if response.status_code != 200:
-        url_respaldo = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-        response = requests.get(url_respaldo, timeout=15)
-        
-    excel_data = io.BytesIO(response.content)
-    
-    # 2. Leer todas las pestañas del archivo
-    dict_hojas = pd.read_excel(excel_data, sheet_name=None, engine='openpyxl')
-    
-    lista_dfs = []
+def procesar_libro_excel(contenido_bytes):
+    """Procesa todas las pestañas de un archivo Excel y normaliza columnas de Región y Zona."""
+    dict_hojas = pd.read_excel(io.BytesIO(contenido_bytes), sheet_name=None, engine='openpyxl')
+    dfs_hoja = []
     hojas_omitir = ['ejemplo', 'hola', 'resumen', 'graficos', 'dashboard']
     
     for nombre_hoja, df_raw in dict_hojas.items():
         if df_raw.empty or normalizar_texto(nombre_hoja) in hojas_omitir:
             continue
             
-        # 3. Buscar la fila exacta de encabezados ignorando tildes y mayúsculas
+        # Buscar la fila de encabezados
         header_idx = None
         for idx in range(min(20, len(df_raw))):
             row_vals = [normalizar_texto(v) for v in df_raw.iloc[idx].values if pd.notna(v)]
@@ -54,7 +41,7 @@ def cargar_inventario_nacional():
             df = df_raw.copy()
             df.columns = [str(c).strip() if pd.notna(c) else f"Col_{i}" for i, c in enumerate(df.columns)]
 
-        # 4. Limpiar y desduplicar nombres de columnas
+        # Desduplicar nombres de columnas
         cols_unicas = []
         vistos = {}
         for col in df.columns:
@@ -69,7 +56,7 @@ def cargar_inventario_nacional():
                 cols_unicas.append(c_str)
         df.columns = cols_unicas
 
-        # 5. Mapear columna de código con normalización de tildes
+        # Identificar columna de código
         col_codigo = next((c for c in df.columns if 'cod' in normalizar_texto(c)), None)
         
         if col_codigo:
@@ -78,89 +65,114 @@ def cargar_inventario_nacional():
             df = df[~df[col_codigo].apply(normalizar_texto).isin(['nan', '', 'none', 'null', 'codigo', 'col_sin_nombre'])]
             
             if not df.empty:
-                df['Ciudad / Pestaña'] = str(nombre_hoja).strip()
+                df['Pestaña / Sede'] = str(nombre_hoja).strip()
                 
-                col_zona_existente = next((c for c in df.columns if 'zona' in normalizar_texto(c) or 'region' in normalizar_texto(c)), None)
-                if not col_zona_existente:
-                    df['Zona'] = str(nombre_hoja).strip()
-                else:
-                    df[col_zona_existente] = df[col_zona_existente].fillna(str(nombre_hoja).strip())
-                    
-                lista_dfs.append(df)
+                # Buscar columna de Región y Zona
+                col_reg_exp = next((c for c in df.columns if 'region' in normalizar_texto(c) or 'regional' in normalizar_texto(c)), None)
+                col_zon_exp = next((c for c in df.columns if 'zona' in normalizar_texto(c)), None)
+                
+                # Asignar valores por defecto si no están definidos
+                df['Región'] = df[col_reg_exp].fillna('COLOMBIA').astype(str).str.strip() if col_reg_exp else 'COLOMBIA'
+                df['Zona'] = df[col_zon_exp].fillna(str(nombre_hoja).strip()).astype(str).str.strip() if col_zon_exp else str(nombre_hoja).strip()
+                
+                dfs_hoja.append(df)
+                
+    return dfs_hoja
+
+@st.cache_data(ttl=60)
+def cargar_inventario_nacional():
+    file_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
+    url_xlsx = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+    
+    response = requests.get(url_xlsx, timeout=15)
+    if response.status_code != 200:
+        url_respaldo = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
+        response = requests.get(url_respaldo, timeout=15)
+        
+    lista_dfs = procesar_libro_excel(response.content)
 
     if not lista_dfs:
-        raise ValueError("No se encontraron registros de códigos válidos en el archivo.")
+        raise ValueError("No se encontraron registros de módulos en los archivos.")
 
-    # 6. Consolidar todas las pestañas de Colombia en una sola tabla
     df_consolidado = pd.concat(lista_dfs, ignore_index=True)
     
     col_codigo = next((c for c in df_consolidado.columns if 'cod' in normalizar_texto(c)), None)
-    col_zona = next((c for c in df_consolidado.columns if 'zona' in normalizar_texto(c) or 'region' in normalizar_texto(c)), None)
+    col_region = 'Región'
+    col_zona = 'Zona'
     col_marca = next((c for c in df_consolidado.columns if 'marca' in normalizar_texto(c)), None)
     col_ubicacion = next((c for c in df_consolidado.columns if 'ubic' in normalizar_texto(c) or 'pantalla' in normalizar_texto(c)), None)
 
-    return df_consolidado, col_codigo, col_zona, col_marca, col_ubicacion
+    return df_consolidado, col_codigo, col_region, col_zona, col_marca, col_ubicacion
 
 try:
-    df_modulos, col_codigo, col_zona, col_marca, col_ubicacion = cargar_inventario_nacional()
-    st.success(f"✅ Inventario consolidado cargado exitosamente ({len(df_modulos)} módulos totales encontrados)")
+    df_modulos, col_codigo, col_region, col_zona, col_marca, col_ubicacion = cargar_inventario_nacional()
+    st.success(f"✅ Inventario consolidado cargado exitosamente ({len(df_modulos)} módulos registrados)")
 except Exception as e:
-    st.error("❌ Ocurrió un error al procesar el archivo Excel de Google Drive:")
+    st.error("❌ Ocurrió un error al procesar el inventario desde Google Drive:")
     st.exception(e)
     st.stop()
 
 # ----------------------------------------------------
-# FILTROS Y SEGMENTACIÓN POR ZONA Y CIUDAD
+# FILTROS EN CASCADA (REGIÓN -> ZONA -> UBICACIÓN)
 # ----------------------------------------------------
-st.header("📋 Inventario Nacional - Filtros de Segmentación")
+st.header("📋 Inventario - FiltrosJerárquicos")
 
 col1, col2, col3, col4 = st.columns(4)
 
+# PASO 1: Selector de Región
 with col1:
-    if col_zona and col_zona in df_modulos.columns:
-        zonas_unicas = sorted([
-            z for z in df_modulos[col_zona].astype(str).str.strip().unique() 
-            if normalizar_texto(z) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
-        ])
-        zona_sel = st.multiselect("Filtrar por Zona / Región", options=zonas_unicas)
-    else:
-        zona_sel = []
-
-with col2:
-    ciudades_unicas = sorted([
-        c for c in df_modulos['Ciudad / Pestaña'].astype(str).str.strip().unique() 
-        if normalizar_texto(c) not in ['nan', '', 'none', 'null']
+    regiones_unicas = sorted([
+        r for r in df_modulos[col_region].unique() 
+        if normalizar_texto(r) not in ['nan', '', 'none', 'null']
     ])
-    ciudad_sel = st.multiselect("Filtrar por Pestaña / Ciudad", options=ciudades_unicas)
+    region_sel = st.multiselect("1. Seleccionar Región", options=regiones_unicas, key="filter_region")
 
+# Filtrar tabla por Región
+df_por_region = df_modulos.copy()
+if region_sel:
+    df_por_region = df_por_region[df_por_region[col_region].isin(region_sel)]
+
+# PASO 2: Selector de Zona (Depende de la Región elegida)
+with col2:
+    zonas_disponibles = sorted([
+        z for z in df_por_region[col_zona].unique() 
+        if normalizar_texto(z) not in ['nan', '', 'none', 'null']
+    ])
+    zona_sel = st.multiselect(
+        "2. Seleccionar Zona (Filtrada por Región)", 
+        options=zonas_disponibles, 
+        key=f"filter_zona_{hash(tuple(sorted(region_sel)))}"
+    )
+
+# Filtrar tabla por Zona
+df_por_zona = df_por_region.copy()
+if zona_sel:
+    df_por_zona = df_por_zona[df_por_zona[col_zona].isin(zona_sel)]
+
+# PASO 3: Selector de Marca (Depende de Región y Zona)
 with col3:
-    if col_marca and col_marca in df_modulos.columns:
-        marcas_unicas = sorted([
-            m for m in df_modulos[col_marca].astype(str).str.strip().unique() 
+    if col_marca and col_marca in df_por_zona.columns:
+        marcas_disponibles = sorted([
+            m for m in df_por_zona[col_marca].astype(str).str.strip().unique() 
             if normalizar_texto(m) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
         ])
-        marca_sel = st.multiselect("Filtrar por Marca", options=marcas_unicas)
+        marca_sel = st.multiselect("3. Marca", options=marcas_disponibles, key="filter_marca")
     else:
         marca_sel = []
 
+# PASO 4: Selector de Ubicación / Sede (Depende de Región y Zona)
 with col4:
-    if col_ubicacion and col_ubicacion in df_modulos.columns:
-        ubic_unicas = sorted([
-            u for u in df_modulos[col_ubicacion].astype(str).str.strip().unique() 
+    if col_ubicacion and col_ubicacion in df_por_zona.columns:
+        ubic_disponibles = sorted([
+            u for u in df_por_zona[col_ubicacion].astype(str).str.strip().unique() 
             if normalizar_texto(u) not in ['nan', '', 'none', 'null', 'col_sin_nombre']
         ])
-        ubicacion_sel = st.multiselect("Filtrar por Ubicación", options=ubic_unicas)
+        ubicacion_sel = st.multiselect("4. Ubicación Actual", options=ubic_disponibles, key="filter_ubicacion")
     else:
         ubicacion_sel = []
 
-# Aplicar filtros combinados
-df_filtrado = df_modulos.copy()
-
-if zona_sel and col_zona:
-    df_filtrado = df_filtrado[df_filtrado[col_zona].astype(str).str.strip().isin(zona_sel)]
-
-if ciudad_sel:
-    df_filtrado = df_filtrado[df_filtrado['Ciudad / Pestaña'].astype(str).str.strip().isin(ciudad_sel)]
+# Aplicar filtros adicionales de Marca y Ubicación
+df_filtrado = df_por_zona.copy()
 
 if marca_sel and col_marca:
     df_filtrado = df_filtrado[df_filtrado[col_marca].astype(str).str.strip().isin(marca_sel)]
@@ -168,23 +180,38 @@ if marca_sel and col_marca:
 if ubicacion_sel and col_ubicacion:
     df_filtrado = df_filtrado[df_filtrado[col_ubicacion].astype(str).str.strip().isin(ubicacion_sel)]
 
+# Mostrar tabla resultante
 st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 # ----------------------------------------------------
-# PROGRAMACIÓN DE JORNADAS CON CÓDIGOS SEGMENTADOS
+# PROGRAMACIÓN DE JORNADAS (CÓDIGOS SEGMENTADOS)
 # ----------------------------------------------------
 st.header("🛠️ Programar / Registrar Jornada")
 
-st.info(f"📌 **Módulos disponibles en el filtro actual:** {len(df_filtrado)} código(s)")
+codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
+
+col_sel_1, col_sel_2 = st.columns([2, 1])
+
+with col_sel_1:
+    st.info(f"📌 **Módulos listos para seleccionar:** {len(codigos_disponibles)} código(s) en la segmentación actual")
+
+with col_sel_2:
+    seleccionar_todos = st.checkbox("✅ Seleccionar TODOS los módulos de este filtro de una vez")
+
+# Key dinámico para actualizar el formulario al cambiar los filtros en cascada
+key_form = f"cods_{hash(tuple(sorted(region_sel)))}_{hash(tuple(sorted(zona_sel)))}_{hash(tuple(sorted(marca_sel)))}_{hash(tuple(sorted(ubicacion_sel)))}_{seleccionar_todos}"
 
 with st.form("form_jornada"):
     col_a, col_b = st.columns(2)
     
     with col_a:
-        codigos_disponibles = sorted(df_filtrado[col_codigo].unique().tolist()) if col_codigo else []
+        default_codigos = codigos_disponibles if seleccionar_todos else []
+        
         codigos_jornada = st.multiselect(
-            f"Seleccionar Módulos ({len(codigos_disponibles)} disponibles según filtro)", 
-            options=codigos_disponibles
+            f"Seleccionar Módulos Específicos ({len(codigos_disponibles)} disponibles)", 
+            options=codigos_disponibles,
+            default=default_codigos,
+            key=key_form
         )
         
         tipo_jornada = st.selectbox("Tipo de Jornada", [
