@@ -1,52 +1,58 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import requests
+import io
 
 st.set_page_config(page_title="Control Módulos LED Colombia", layout="wide")
 st.title("🎛️ Panel de Control - Mantenimiento Módulos LED Colombia")
 
 @st.cache_data(ttl=60)
 def cargar_inventario_nacional():
-    # ID de tu archivo de inventario en Google Drive
     file_id = "166rj5uykRRDzjRlcKDa3WCR_f6FeREpc"
+    url_xlsx = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
     
-    # URL de descarga binaria directa de Google Drive para archivos .xlsx
-    url_directa_xlsx = f"https://drive.google.com/uc?export=download&id={file_id}"
+    # 1. Descarga binaria segura mediante requests
+    response = requests.get(url_xlsx, timeout=15)
+    if response.status_code != 200:
+        # Intento de respaldo si la exportación directa falla
+        url_respaldo = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
+        response = requests.get(url_respaldo, timeout=15)
+        
+    excel_data = io.BytesIO(response.content)
     
-    # Cargar todas las pestañas del libro de Excel
-    dict_hojas = pd.read_excel(url_directa_xlsx, sheet_name=None, engine='openpyxl')
+    # 2. Leer todas las pestañas del libro Excel
+    dict_hojas = pd.read_excel(excel_data, sheet_name=None, engine='openpyxl')
     
     lista_dfs = []
-    
-    # Pestañas a ignorar si son resúmenes o ejemplos
     hojas_omitir = ['ejemplo', 'hola', 'resumen', 'graficos', 'dashboard']
     
     for nombre_hoja, df_raw in dict_hojas.items():
         if df_raw.empty or str(nombre_hoja).lower().strip() in hojas_omitir:
             continue
             
-        # 1. Escanear hasta las primeras 15 filas para encontrar la cabecera real con 'Código' o 'Marca'
+        # 3. Buscar la fila exacta donde inician los encabezados ('Código', 'Cod', 'Marca', etc.)
         header_idx = None
-        for idx in range(min(15, len(df_raw))):
-            row_vals = [str(v).lower().strip() for v in df_raw.iloc[idx].values]
-            if any('cod' in v or 'marca' in v for v in row_vals):
+        for idx in range(len(df_raw)):
+            row_vals = [str(v).lower().strip() for v in df_raw.iloc[idx].values if pd.notna(v)]
+            if any('cod' in v for v in row_vals):
                 header_idx = idx
                 break
                 
         if header_idx is not None:
-            headers = [str(v).strip() for v in df_raw.iloc[header_idx].values]
+            headers = [str(v).strip() if pd.notna(v) else f"Col_{i}" for i, v in enumerate(df_raw.iloc[header_idx].values)]
             df = df_raw.iloc[header_idx + 1:].copy().reset_index(drop=True)
             df.columns = headers
         else:
             df = df_raw.copy()
-            df.columns = [str(c).strip() for c in df.columns]
+            df.columns = [str(c).strip() if pd.notna(c) else f"Col_{i}" for i, c in enumerate(df.columns)]
 
-        # 2. Desduplicar nombres de columnas
+        # 4. Limpieza y desduplicación de nombres de columna
         cols_unicas = []
         vistos = {}
         for col in df.columns:
             c_str = str(col).strip()
-            if not c_str or c_str.lower() in ['nan', 'unnamed:']:
+            if not c_str or c_str.lower() in ['nan', 'unnamed:'] or c_str.startswith('Unnamed:'):
                 c_str = "Col_Sin_Nombre"
             if c_str in vistos:
                 vistos[c_str] += 1
@@ -56,27 +62,33 @@ def cargar_inventario_nacional():
                 cols_unicas.append(c_str)
         df.columns = cols_unicas
 
-        # 3. Buscar la columna del código
+        # 5. Mapeo de la columna 'Código'
         col_codigo = next((c for c in df.columns if 'cod' in c.lower()), None)
         
         if col_codigo:
-            # Eliminar filas vacías o títulos repetidos
             df = df[df[col_codigo].notna()]
-            df = df[~df[col_codigo].astype(str).str.lower().isin(['nan', '', 'none', 'null', 'código', 'codigo', 'col_sin_nombre'])]
-            df[col_codigo] = df[col_codigo].astype(str).str.replace('.0', '', regex=False).str.strip()
+            df[col_codigo] = df[col_codigo].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            df = df[~df[col_codigo].str.lower().isin(['nan', '', 'none', 'null', 'código', 'codigo', 'col_sin_nombre'])]
             
-            # Asignar Ciudad/Pestaña de origen
-            df['Ciudad / Pestaña'] = str(nombre_hoja).strip()
-            
-            lista_dfs.append(df)
+            if not df.empty:
+                # Asignar Ciudad o Pestaña de origen
+                df['Ciudad / Pestaña'] = str(nombre_hoja).strip()
+                
+                # Si no existe columna de Zona, asignar por defecto el nombre de la pestaña
+                col_zona_existente = next((c for c in df.columns if 'zona' in c.lower()), None)
+                if not col_zona_existente:
+                    df['Zona'] = str(nombre_hoja).strip()
+                else:
+                    df[col_zona_existente] = df[col_zona_existente].fillna(str(nombre_hoja).strip())
+                    
+                lista_dfs.append(df)
 
     if not lista_dfs:
-        raise ValueError("No se encontraron códigos de módulos válidos en el archivo Excel.")
+        raise ValueError("No se encontraron registros de códigos válidos en el libro de Excel.")
 
-    # Unir todas las pestañas en un solo DataFrame
+    # 6. Consolida todas las pestañas en un solo DataFrame
     df_consolidado = pd.concat(lista_dfs, ignore_index=True)
     
-    # Mapeo de columnas principales
     col_codigo = next((c for c in df_consolidado.columns if 'cod' in c.lower()), None)
     col_zona = next((c for c in df_consolidado.columns if 'zona' in c.lower()), None)
     col_marca = next((c for c in df_consolidado.columns if 'marca' in c.lower()), None)
@@ -86,7 +98,7 @@ def cargar_inventario_nacional():
 
 try:
     df_modulos, col_codigo, col_zona, col_marca, col_ubicacion = cargar_inventario_nacional()
-    st.success(f"✅ Inventario consolidado cargado exitosamente ({len(df_modulos)} módulos totales)")
+    st.success(f"✅ Inventario consolidado cargado exitosamente ({len(df_modulos)} módulos encontrados en total)")
 except Exception as e:
     st.error("❌ Ocurrió un error al procesar el archivo Excel de Google Drive:")
     st.exception(e)
@@ -136,7 +148,7 @@ with col4:
     else:
         ubicacion_sel = []
 
-# Filtrado dinámico
+# Filtrado reactivo
 df_filtrado = df_modulos.copy()
 
 if zona_sel and col_zona:
@@ -154,7 +166,7 @@ if ubicacion_sel and col_ubicacion:
 st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 # ----------------------------------------------------
-# PROGRAMACIÓN DE JORNADAS
+# PROGRAMACIÓN DE JORNADAS CON CÓDIGOS SEGMENTADOS
 # ----------------------------------------------------
 st.header("🛠️ Programar / Registrar Jornada")
 
